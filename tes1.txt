@@ -1,0 +1,921 @@
+-- =====================================================
+-- WIN84 DEEP VALIDATOR SCANNER (AUTO-LOAD ALL BLOCKED IDs)
+-- =====================================================
+
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local HttpService = game:GetService("HttpService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TextService = game:GetService("TextService")
+
+local LocalPlayer = Players.LocalPlayer
+local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
+
+local CurrentSelectedPlayer = nil
+local StatusLabel = nil
+
+-- ==================== วาง URL ไฟล์ RAW บล็อคไอดีที่นี่ ====================
+-- นำไฟล์ ไอดีเทส_2.txt ไปอัปโหลดลง GitHub Gist หรือ Pastebin (แบบ Raw) แล้วเอาลิงก์มาวาง
+local BLOCKED_IDS_URL = "https://raw.githubusercontent.com/.../ไอดีเทส_2.txt"
+
+local BlockedIDs = {}
+
+-- ฟังก์ชันดึงไอดีปลอมทั้งหมดจากไฟล์มาใส่ใน BlockedIDs อัตโนมัติ
+local function fetchBlockedIDs()
+    if not BLOCKED_IDS_URL or BLOCKED_IDS_URL == "" or string.find(BLOCKED_IDS_URL, "githubusercontent") == nil then
+        return
+    end
+    
+    local req = (syn and syn.request) or (http and http.request) or http_request or (fluxus and fluxus.request) or request
+    if req then
+        pcall(function()
+            local res = req({ Url = BLOCKED_IDS_URL, Method = "GET" })
+            if res and res.Body then
+                local count = 0
+                for id in string.gmatch(res.Body, "%d+") do
+                    if not BlockedIDs[id] then
+                        BlockedIDs[id] = true
+                        count = count + 1
+                    end
+                end
+                if StatusLabel then
+                    StatusLabel.Text = "✅ โหลด ID บล็อคสำเร็จทั้งหมด " .. count .. " รายการ!"
+                end
+            end
+        end)
+    end
+end
+
+-- ==================== ระบบบันทึก & แปลงไฟล์เซฟเก่า ====================
+local SavedSongs = {}
+local SAVE_FILE_NAME = "WIN84_SavedSongs.json"
+
+local OLD_SAVE_FILES = {
+    "HONKUKI_SavedSongs.json",
+    "DEEP_SavedSongs.json",
+    "SavedSongs.json"
+}
+
+local function saveSavedSongs()
+    if writefile then
+        pcall(function()
+            writefile(SAVE_FILE_NAME, HttpService:JSONEncode(SavedSongs))
+        end)
+    end
+end
+
+local function loadSavedSongs()
+    SavedSongs = {}
+    local loadedMap = {}
+
+    local function parseAndMerge(fileContent)
+        local success, data = pcall(function()
+            return HttpService:JSONDecode(fileContent)
+        end)
+        if success and type(data) == "table" then
+            for idx, item in ipairs(data) do
+                local songId, songName = nil, nil
+                if type(item) == "string" then
+                    songId = item
+                    songName = "เพลงที่ " .. (#SavedSongs + 1)
+                elseif type(item) == "table" and item.id then
+                    songId = tostring(item.id)
+                    songName = item.name or ("เพลงที่ " .. (#SavedSongs + 1))
+                end
+
+                if songId and not loadedMap[songId] then
+                    loadedMap[songId] = true
+                    table.insert(SavedSongs, { id = songId, name = songName })
+                end
+            end
+        end
+    end
+
+    if readfile and isfile and isfile(SAVE_FILE_NAME) then
+        parseAndMerge(readfile(SAVE_FILE_NAME))
+    end
+
+    if readfile and isfile then
+        for _, oldFileName in ipairs(OLD_SAVE_FILES) do
+            if isfile(oldFileName) then
+                parseAndMerge(readfile(oldFileName))
+            end
+        end
+    end
+
+    saveSavedSongs()
+end
+
+local function addSavedSong(songId, customName)
+    if not songId or songId == "" then return false end
+    songId = tostring(songId)
+    for _, song in ipairs(SavedSongs) do
+        if song.id == songId then return false end
+    end
+    local name = customName or ("เพลงที่ " .. (#SavedSongs + 1))
+    table.insert(SavedSongs, { id = songId, name = name })
+    saveSavedSongs()
+    return true
+end
+
+local function removeSavedSong(songId)
+    songId = tostring(songId)
+    for i, song in ipairs(SavedSongs) do
+        if song.id == songId then
+            table.remove(SavedSongs, i)
+            saveSavedSongs()
+            return true
+        end
+    end
+    return false
+end
+
+local function updateSongName(songId, newName)
+    songId = tostring(songId)
+    for _, song in ipairs(SavedSongs) do
+        if song.id == songId then
+            song.name = newName
+            saveSavedSongs()
+            return true
+        end
+    end
+    return false
+end
+
+loadSavedSongs()
+
+-- ==================== Helper Functions ====================
+local function urlDecode(str)
+    if not str then return "" end
+    str = string.gsub(str, "+", " ")
+    return (string.gsub(str, "%%(%x%x)", function(h) return string.char(tonumber(h, 16)) end))
+end
+
+local function hexDecode(str)
+    if not str then return "" end
+    str = string.gsub(str, "0x", "")
+    str = string.gsub(str, "\\x", "")
+    str = string.gsub(str, "%%", "")
+    str = string.gsub(str, "%s+", "")
+    if string.match(str, "^%x+$") and #str % 2 == 0 then
+        local decoded = ""
+        for i = 1, #str, 2 do
+            local byteStr = string.sub(str, i, i+1)
+            local byte = tonumber(byteStr, 16)
+            if byte then decoded = decoded .. string.char(byte) end
+        end
+        if #decoded > 0 then return decoded end
+    end
+    return str
+end
+
+local function deepDecode(str)
+    if type(str) ~= "string" then return str end
+    local prev
+    repeat
+        prev = str
+        str = urlDecode(str)
+        str = hexDecode(str)
+    until str == prev
+    return str
+end
+
+local function extractIDsFromPattern(text)
+    local ids = {}
+    local patterns = {
+        "69%%64=([^&]*)", "&id=([^&]*)", "id=([^&]*)",
+        "audio=([^&]*)", "song=([^&]*)", "music=([^&]*)"
+    }
+    for _, pat in ipairs(patterns) do
+        for capture in string.gmatch(text, pat) do
+            for num in string.gmatch(capture, "%d+") do
+                if not BlockedIDs[num] then table.insert(ids, num) end
+            end
+        end
+    end
+    return ids
+end
+
+local function getPlayerVehicle(player)
+    if not player or not player.Character then return nil end
+    local humanoid = player.Character:FindFirstChildOfClass("Humanoid")
+    if not humanoid or not humanoid.SeatPart then return nil end
+    local vehicle = humanoid.SeatPart.Parent
+    while vehicle and not vehicle:IsA("Model") do vehicle = vehicle.Parent end
+    return (vehicle and vehicle:IsA("Model")) and vehicle or nil
+end
+
+local function checkPlayerAllSounds(targetPlayer)
+    if not targetPlayer then return {} end
+    local scanTargets = {}
+    if targetPlayer.Character then table.insert(scanTargets, targetPlayer.Character) end
+    local backpack = targetPlayer:FindFirstChild("Backpack")
+    if backpack then table.insert(scanTargets, backpack) end
+    local vehicle = getPlayerVehicle(targetPlayer)
+    if vehicle then table.insert(scanTargets, vehicle) end
+
+    local validSounds = {}
+    local soundMap = {}
+
+    for _, folder in ipairs(scanTargets) do
+        local success, descendants = pcall(function() return folder:GetDescendants() end)
+        if success and descendants then
+            for _, obj in ipairs(descendants) do
+                if obj:IsA("Sound") and obj.SoundId ~= "" and obj.IsPlaying then
+                    local cleanId = string.match(obj.SoundId, "%d+")
+                    if not (cleanId and BlockedIDs[cleanId]) then
+                        local key = obj.SoundId
+                        if not soundMap[key] then
+                            soundMap[key] = true
+                            table.insert(validSounds, obj)
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return validSounds
+end
+
+local function copyToClipboard(text)
+    local setclip = setclipboard or toclipboard or (Clipboard and Clipboard.set)
+    if setclip then setclip(text) end
+end
+
+local function playMusicFromId(musicId)
+    if not musicId or musicId == "" then return false end
+    local re = ReplicatedStorage:FindFirstChild("RE")
+    if re then
+        local success1, success2 = false, false
+        local event1 = re:FindFirstChild("PlayerToolEvent")
+        if event1 then
+            success1 = pcall(function() event1:FireServer("ToolMusicText", musicId, "", true) end)
+        end
+        local event2 = re:FindFirstChild("1NoMoto1rVehicle1s")
+        if event2 then
+            success2 = pcall(function() event2:FireServer("ToolMusicText", musicId, "", true) end)
+        end
+        return success1 or success2
+    end
+    return false
+end
+
+-- ==================== โครงสร้าง UI หลัก ====================
+if PlayerGui:FindFirstChild("WIN84_DeepSoundSpy") then PlayerGui.WIN84_DeepSoundSpy:Destroy() end
+
+local ScreenGui = Instance.new("ScreenGui", PlayerGui)
+ScreenGui.Name = "WIN84_DeepSoundSpy"
+ScreenGui.ResetOnSpawn = false
+
+local function setDrag(frame, handle)
+    local dragging, dragInput, dragStart, startPos
+    handle.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            dragStart = input.Position
+            startPos = frame.Position
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then dragging = false end
+            end)
+        end
+    end)
+    handle.InputChanged:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+            dragInput = input
+        end
+    end)
+    UserInputService.InputChanged:Connect(function(input)
+        if input == dragInput and dragging then
+            local delta = input.Position - dragStart
+            frame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+        end
+    end)
+end
+
+local MainFrame = Instance.new("Frame", ScreenGui)
+MainFrame.Size = UDim2.new(0, 520, 0, 240)
+MainFrame.Position = UDim2.new(0.5, -260, 0.5, -120)
+MainFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+MainFrame.ZIndex = 1
+Instance.new("UICorner", MainFrame).CornerRadius = UDim.new(0, 8)
+local mStroke = Instance.new("UIStroke", MainFrame)
+mStroke.Color = Color3.fromRGB(60, 60, 60)
+
+local TopBar = Instance.new("Frame", MainFrame)
+TopBar.Size = UDim2.new(1, 0, 0, 32)
+TopBar.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+TopBar.ZIndex = 2
+Instance.new("UICorner", TopBar).CornerRadius = UDim.new(0, 8)
+setDrag(MainFrame, TopBar)
+
+local Title = Instance.new("TextLabel", TopBar)
+Title.Size = UDim2.new(1, -10, 1, 0)
+Title.Position = UDim2.new(0, 12, 0, 0)
+Title.BackgroundTransparency = 1
+Title.Text = "WIN84 DEEP VALIDATOR SCANNER"
+Title.TextColor3 = Color3.fromRGB(255, 215, 0)
+Title.Font = Enum.Font.GothamBold
+Title.TextSize = 11
+Title.TextXAlignment = Enum.TextXAlignment.Left
+Title.ZIndex = 3
+
+local ListScroll = Instance.new("ScrollingFrame", MainFrame)
+ListScroll.Size = UDim2.new(0.45, 0, 0, 155)
+ListScroll.Position = UDim2.new(0.03, 0, 0.18, 0)
+ListScroll.BackgroundColor3 = Color3.fromRGB(15, 15, 15)
+ListScroll.BorderSizePixel = 0
+ListScroll.ScrollBarThickness = 4
+ListScroll.ZIndex = 2
+Instance.new("UICorner", ListScroll).CornerRadius = UDim.new(0, 5)
+
+local Layout = Instance.new("UIListLayout", ListScroll)
+Layout.Padding = UDim.new(0, 4)
+
+local ButtonsContainer = Instance.new("Frame", MainFrame)
+ButtonsContainer.Size = UDim2.new(0.47, 0, 0, 155)
+ButtonsContainer.Position = UDim2.new(0.5, 0, 0.18, 0)
+ButtonsContainer.BackgroundTransparency = 1
+ButtonsContainer.ZIndex = 2
+
+local BLayout = Instance.new("UIListLayout", ButtonsContainer)
+BLayout.Padding = UDim.new(0, 3)
+
+local function createMenuButton(text, color)
+    local btn = Instance.new("TextButton", ButtonsContainer)
+    btn.Size = UDim2.new(1, 0, 0, 22)
+    btn.BackgroundColor3 = color
+    btn.Text = text
+    btn.Font = Enum.Font.GothamBold
+    btn.TextSize = 10
+    btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    btn.ZIndex = 3
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 4)
+    return btn
+end
+
+local GetIDBtn = createMenuButton("⚡ เจาะและดึงไอดีทั้งหมดทันที", Color3.fromRGB(255, 215, 0))
+GetIDBtn.TextColor3 = Color3.fromRGB(20, 20, 20)
+local GetJunkBtn = createMenuButton("🎵 เปิดเพลงตาม + บันทึก", Color3.fromRGB(230, 90, 40))
+local ViewRawJunkBtn = createMenuButton("👁️ ดูข้อความ RAW ดิบของผู้เล่น", Color3.fromRGB(140, 20, 230))
+local ViewInstantBtn = createMenuButton("🔍 ดู ID เจาะทั้งหมด (Real-time)", Color3.fromRGB(0, 200, 100))
+local MyAudioBtn = createMenuButton("🎧 ดูข้อมูลเพลงบนตัวเรา (Real-time)", Color3.fromRGB(230, 0, 120))
+local SavedSongsBtn = createMenuButton("⭐ เพลงที่บันทึกไว้ (Saved)", Color3.fromRGB(0, 150, 255))
+
+StatusLabel = Instance.new("TextLabel", MainFrame)
+StatusLabel.Size = UDim2.new(0.68, 0, 0, 24)
+StatusLabel.Position = UDim2.new(0.03, 0, 0.86, 0)
+StatusLabel.BackgroundColor3 = Color3.fromRGB(255, 215, 0)
+StatusLabel.BackgroundTransparency = 0.9
+StatusLabel.Text = "กำลังโหลดระบบ..."
+StatusLabel.TextColor3 = Color3.fromRGB(255, 215, 0)
+StatusLabel.Font = Enum.Font.Gotham
+StatusLabel.TextSize = 10
+StatusLabel.TextWrapped = true
+StatusLabel.ZIndex = 2
+Instance.new("UICorner", StatusLabel).CornerRadius = UDim.new(0, 4)
+
+local RefreshBtn = Instance.new("TextButton", MainFrame)
+RefreshBtn.Size = UDim2.new(0.24, 0, 0, 24)
+RefreshBtn.Position = UDim2.new(0.73, 0, 0.86, 0)
+RefreshBtn.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
+RefreshBtn.Text = "🔄 รีเฟรชรายชื่อ"
+RefreshBtn.Font = Enum.Font.GothamBold
+RefreshBtn.TextSize = 10
+RefreshBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+RefreshBtn.ZIndex = 2
+Instance.new("UICorner", RefreshBtn).CornerRadius = UDim.new(0, 4)
+
+local ToggleBtn = Instance.new("TextButton", ScreenGui)
+ToggleBtn.Size = UDim2.new(0, 46, 0, 46)
+ToggleBtn.Position = UDim2.new(0.02, 0, 0.4, 0)
+ToggleBtn.BackgroundColor3 = Color3.fromRGB(10, 10, 10)
+ToggleBtn.Text = "🎵"
+ToggleBtn.TextSize = 18
+ToggleBtn.TextColor3 = Color3.fromRGB(255, 215, 0)
+ToggleBtn.ZIndex = 100
+Instance.new("UICorner", ToggleBtn).CornerRadius = UDim.new(0, 23)
+setDrag(ToggleBtn, ToggleBtn)
+
+-- ==================== หน้าต่าง VIEWER WINDOW ====================
+local JunkFrame = Instance.new("Frame", ScreenGui)
+JunkFrame.Size = UDim2.new(0, 420, 0, 240)
+JunkFrame.Position = UDim2.new(0.5, -210, 0.5, -120)
+JunkFrame.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
+JunkFrame.Visible = false
+JunkFrame.ZIndex = 10
+Instance.new("UICorner", JunkFrame).CornerRadius = UDim.new(0, 8)
+local jStroke = Instance.new("UIStroke", JunkFrame)
+jStroke.Color = Color3.fromRGB(140, 20, 230)
+jStroke.Thickness = 1.5
+
+local JunkTopBar = Instance.new("Frame", JunkFrame)
+JunkTopBar.Size = UDim2.new(1, 0, 0, 32)
+JunkTopBar.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+JunkTopBar.ZIndex = 11
+Instance.new("UICorner", JunkTopBar).CornerRadius = UDim.new(0, 8)
+setDrag(JunkFrame, JunkTopBar)
+
+local JunkTitle = Instance.new("TextLabel", JunkTopBar)
+JunkTitle.Size = UDim2.new(1, -10, 1, 0)
+JunkTitle.Position = UDim2.new(0, 12, 0, 0)
+JunkTitle.BackgroundTransparency = 1
+JunkTitle.Text = "WIN84 VIEWER WINDOW"
+JunkTitle.TextColor3 = Color3.fromRGB(200, 100, 255)
+JunkTitle.Font = Enum.Font.GothamBold
+JunkTitle.TextSize = 11
+JunkTitle.TextXAlignment = Enum.TextXAlignment.Left
+JunkTitle.ZIndex = 12
+
+local JunkScroll = Instance.new("ScrollingFrame", JunkFrame)
+JunkScroll.Size = UDim2.new(0.94, 0, 0, 150)
+JunkScroll.Position = UDim2.new(0.03, 0, 0.18, 0)
+JunkScroll.BackgroundColor3 = Color3.fromRGB(12, 12, 12)
+JunkScroll.BorderSizePixel = 0
+JunkScroll.ScrollBarThickness = 4
+JunkScroll.ZIndex = 11
+Instance.new("UICorner", JunkScroll).CornerRadius = UDim.new(0, 5)
+
+local SavedContainer = Instance.new("Frame", JunkScroll)
+SavedContainer.Size = UDim2.new(1, 0, 1, 0)
+SavedContainer.BackgroundTransparency = 1
+SavedContainer.Visible = false
+SavedContainer.ZIndex = 12
+local SavedLayout = Instance.new("UIListLayout", SavedContainer)
+SavedLayout.Padding = UDim.new(0, 4)
+
+local JunkTextLabel = Instance.new("TextLabel", JunkScroll)
+JunkTextLabel.Size = UDim2.new(1, -10, 0, 0)
+JunkTextLabel.Position = UDim2.new(0, 5, 0, 5)
+JunkTextLabel.BackgroundTransparency = 1
+JunkTextLabel.Text = "ไม่มีข้อมูล..."
+JunkTextLabel.TextColor3 = Color3.fromRGB(220, 220, 220)
+JunkTextLabel.Font = Enum.Font.Code
+JunkTextLabel.TextSize = 11
+JunkTextLabel.TextXAlignment = Enum.TextXAlignment.Left
+JunkTextLabel.TextYAlignment = Enum.TextYAlignment.Top
+JunkTextLabel.TextWrapped = true
+JunkTextLabel.ZIndex = 12
+
+local JunkCopyBtn = Instance.new("TextButton", JunkFrame)
+JunkCopyBtn.Size = UDim2.new(0.45, 0, 0, 26)
+JunkCopyBtn.Position = UDim2.new(0.03, 0, 0.86, 0)
+JunkCopyBtn.BackgroundColor3 = Color3.fromRGB(140, 20, 230)
+JunkCopyBtn.Text = "📋 คัดลอกทั้งหมด"
+JunkCopyBtn.Font = Enum.Font.GothamBold
+JunkCopyBtn.TextSize = 11
+JunkCopyBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+JunkCopyBtn.ZIndex = 11
+Instance.new("UICorner", JunkCopyBtn).CornerRadius = UDim.new(0, 5)
+
+local JunkBackBtn = Instance.new("TextButton", JunkFrame)
+JunkBackBtn.Size = UDim2.new(0.45, 0, 0, 26)
+JunkBackBtn.Position = UDim2.new(0.52, 0, 0.86, 0)
+JunkBackBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+JunkBackBtn.Text = "⬅ ย้อนกลับ"
+JunkBackBtn.Font = Enum.Font.GothamBold
+JunkBackBtn.TextSize = 11
+JunkBackBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+JunkBackBtn.ZIndex = 11
+Instance.new("UICorner", JunkBackBtn).CornerRadius = UDim.new(0, 5)
+
+-- ==================== Pop-up กล่องเปลี่ยนชื่อเพลง ====================
+local RenameModal = Instance.new("Frame", ScreenGui)
+RenameModal.Size = UDim2.new(0, 300, 0, 140)
+RenameModal.Position = UDim2.new(0.5, -150, 0.5, -70)
+RenameModal.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+RenameModal.Visible = false
+RenameModal.ZIndex = 50
+Instance.new("UICorner", RenameModal).CornerRadius = UDim.new(0, 8)
+local rmStroke = Instance.new("UIStroke", RenameModal)
+rmStroke.Color = Color3.fromRGB(0, 150, 255)
+rmStroke.Thickness = 2
+
+local rmTitle = Instance.new("TextLabel", RenameModal)
+rmTitle.Size = UDim2.new(1, 0, 0, 30)
+rmTitle.BackgroundTransparency = 1
+rmTitle.Text = "✏️ WIN84 - แก้ไขชื่อเพลง"
+rmTitle.TextColor3 = Color3.fromRGB(255, 255, 255)
+rmTitle.Font = Enum.Font.GothamBold
+rmTitle.TextSize = 12
+rmTitle.ZIndex = 51
+
+local rmInput = Instance.new("TextBox", RenameModal)
+rmInput.Size = UDim2.new(0.88, 0, 0, 32)
+rmInput.Position = UDim2.new(0.06, 0, 0.3, 0)
+rmInput.BackgroundColor3 = Color3.fromRGB(15, 15, 15)
+rmInput.TextColor3 = Color3.fromRGB(255, 255, 255)
+rmInput.Text = ""
+rmInput.PlaceholderText = "พิมพ์ชื่อเพลงใหม่ที่นี่..."
+rmInput.Font = Enum.Font.Gotham
+rmInput.TextSize = 11
+rmInput.ClearTextOnFocus = false
+rmInput.ZIndex = 51
+Instance.new("UICorner", rmInput).CornerRadius = UDim.new(0, 4)
+
+local rmSaveBtn = Instance.new("TextButton", RenameModal)
+rmSaveBtn.Size = UDim2.new(0.42, 0, 0, 28)
+rmSaveBtn.Position = UDim2.new(0.06, 0, 0.68, 0)
+rmSaveBtn.BackgroundColor3 = Color3.fromRGB(0, 180, 90)
+rmSaveBtn.Text = "💾 บันทึก"
+rmSaveBtn.Font = Enum.Font.GothamBold
+rmSaveBtn.TextSize = 11
+rmSaveBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+rmSaveBtn.ZIndex = 51
+Instance.new("UICorner", rmSaveBtn).CornerRadius = UDim.new(0, 4)
+
+local rmCancelBtn = Instance.new("TextButton", RenameModal)
+rmCancelBtn.Size = UDim2.new(0.42, 0, 0, 28)
+rmCancelBtn.Position = UDim2.new(0.52, 0, 0.68, 0)
+rmCancelBtn.BackgroundColor3 = Color3.fromRGB(180, 40, 40)
+rmCancelBtn.Text = "❌ ยกเลิก"
+rmCancelBtn.Font = Enum.Font.GothamBold
+rmCancelBtn.TextSize = 11
+rmCancelBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+rmCancelBtn.ZIndex = 51
+Instance.new("UICorner", rmCancelBtn).CornerRadius = UDim.new(0, 4)
+
+local TargetRenameSongId = nil
+
+local function openRenameModal(songId, oldName)
+    TargetRenameSongId = songId
+    rmInput.Text = oldName or ""
+    RenameModal.Visible = true
+end
+
+rmSaveBtn.MouseButton1Click:Connect(function()
+    if TargetRenameSongId and rmInput.Text ~= "" then
+        updateSongName(TargetRenameSongId, rmInput.Text)
+        StatusLabel.Text = "✅ เปลี่ยนชื่อสำเร็จ: " .. rmInput.Text
+        RenameModal.Visible = false
+        updateSavedSongsUI()
+    end
+end)
+
+rmCancelBtn.MouseButton1Click:Connect(function()
+    RenameModal.Visible = false
+end)
+
+-- ==================== การจัดการแสดงผลและปุ่มใน VIEWER ====================
+local CurrentViewMode = 1
+local PlayerButtons = {}
+
+function updateSavedSongsUI()
+    for _, child in ipairs(SavedContainer:GetChildren()) do
+        if child:IsA("Frame") or child:IsA("TextLabel") then child:Destroy() end
+    end
+
+    if #SavedSongs == 0 then
+        local emptyLabel = Instance.new("TextLabel", SavedContainer)
+        emptyLabel.Size = UDim2.new(1, -10, 0, 40)
+        emptyLabel.BackgroundTransparency = 1
+        emptyLabel.Text = "❌ ยังไม่มีรายการเพลงที่บันทึกไว้"
+        emptyLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
+        emptyLabel.Font = Enum.Font.Gotham
+        emptyLabel.TextSize = 11
+        emptyLabel.ZIndex = 13
+        JunkScroll.CanvasSize = UDim2.new(0, 0, 0, 50)
+        return
+    end
+
+    local totalHeight = 0
+    for idx, songData in ipairs(SavedSongs) do
+        local itemFrame = Instance.new("Frame", SavedContainer)
+        itemFrame.Size = UDim2.new(1, -10, 0, 32)
+        itemFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+        itemFrame.ZIndex = 13
+        Instance.new("UICorner", itemFrame).CornerRadius = UDim.new(0, 4)
+
+        local nameLabel = Instance.new("TextLabel", itemFrame)
+        nameLabel.Size = UDim2.new(0.48, -5, 1, 0)
+        nameLabel.Position = UDim2.new(0, 8, 0, 0)
+        nameLabel.BackgroundTransparency = 1
+        nameLabel.Text = string.format("[%d] %s", idx, songData.name or songData.id)
+        nameLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+        nameLabel.Font = Enum.Font.GothamSemibold
+        nameLabel.TextSize = 10
+        nameLabel.TextXAlignment = Enum.TextXAlignment.Left
+        nameLabel.TextTruncate = Enum.TextTruncate.AtEnd
+        nameLabel.ZIndex = 14
+
+        local editBtn = Instance.new("TextButton", itemFrame)
+        editBtn.Size = UDim2.new(0.12, 0, 0.7, 0)
+        editBtn.Position = UDim2.new(0.49, 0, 0.15, 0)
+        editBtn.BackgroundColor3 = Color3.fromRGB(70, 70, 70)
+        editBtn.Text = "⚙️"
+        editBtn.Font = Enum.Font.GothamBold
+        editBtn.TextSize = 10
+        editBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+        editBtn.ZIndex = 14
+        Instance.new("UICorner", editBtn).CornerRadius = UDim.new(0, 3)
+
+        editBtn.MouseButton1Click:Connect(function()
+            openRenameModal(songData.id, songData.name)
+        end)
+
+        local playBtn = Instance.new("TextButton", itemFrame)
+        playBtn.Size = UDim2.new(0.18, 0, 0.7, 0)
+        playBtn.Position = UDim2.new(0.63, 0, 0.15, 0)
+        playBtn.BackgroundColor3 = Color3.fromRGB(0, 180, 90)
+        playBtn.Text = "▶️ เล่น"
+        playBtn.Font = Enum.Font.GothamBold
+        playBtn.TextSize = 10
+        playBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+        playBtn.ZIndex = 14
+        Instance.new("UICorner", playBtn).CornerRadius = UDim.new(0, 3)
+
+        playBtn.MouseButton1Click:Connect(function()
+            if playMusicFromId(songData.id) then
+                StatusLabel.Text = "✅ เปิดเพลง: " .. songData.name
+            else
+                StatusLabel.Text = "❌ ไม่สามารถเล่นเพลงได้"
+            end
+        end)
+
+        local delBtn = Instance.new("TextButton", itemFrame)
+        delBtn.Size = UDim2.new(0.15, 0, 0.7, 0)
+        delBtn.Position = UDim2.new(0.83, 0, 0.15, 0)
+        delBtn.BackgroundColor3 = Color3.fromRGB(200, 40, 40)
+        delBtn.Text = "🗑 ลบ"
+        delBtn.Font = Enum.Font.GothamBold
+        delBtn.TextSize = 10
+        delBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+        delBtn.ZIndex = 14
+        Instance.new("UICorner", delBtn).CornerRadius = UDim.new(0, 3)
+
+        delBtn.MouseButton1Click:Connect(function()
+            removeSavedSong(songData.id)
+            StatusLabel.Text = "🗑️ ลบเพลงเรียบร้อย!"
+            updateSavedSongsUI()
+        end)
+
+        totalHeight = totalHeight + 36
+    end
+
+    JunkScroll.CanvasSize = UDim2.new(0, 0, 0, totalHeight + 10)
+end
+
+function updateJunkViewerLive()
+    if not JunkFrame.Visible then return end
+
+    if CurrentViewMode == 4 then
+        JunkTitle.Text = "⭐ WIN84 - SAVED SONGS LIST"
+        jStroke.Color = Color3.fromRGB(0, 150, 255)
+        JunkCopyBtn.BackgroundColor3 = Color3.fromRGB(0, 150, 255)
+        
+        JunkTextLabel.Visible = false
+        SavedContainer.Visible = true
+        updateSavedSongsUI()
+        return
+    else
+        JunkTextLabel.Visible = true
+        SavedContainer.Visible = false
+    end
+
+    local outputText = ""
+
+    if CurrentViewMode == 3 then
+        JunkTitle.Text = "WIN84 - REAL-TIME AUDIO INFO"
+        jStroke.Color = Color3.fromRGB(230, 0, 120)
+        JunkCopyBtn.BackgroundColor3 = Color3.fromRGB(230, 0, 120)
+
+        local soundObj, cleanId = nil, nil
+        local targets = { LocalPlayer.Character, LocalPlayer:FindFirstChild("Backpack"), getPlayerVehicle(LocalPlayer) }
+        for _, parent in ipairs(targets) do
+            if parent then
+                local descs = parent:GetDescendants()
+                for _, sound in ipairs(descs) do
+                    if sound:IsA("Sound") and sound.IsPlaying and sound.SoundId ~= "" then
+                        cleanId = string.match(sound.SoundId, "%d+")
+                        if cleanId and not BlockedIDs[cleanId] then soundObj = sound break end
+                    end
+                end
+            end
+        end
+
+        if not soundObj or not cleanId then
+            outputText = "❌ ไม่พบเพลงที่กำลังเล่นอยู่บนตัวละครของคุณในขณะนี้..."
+        else
+            outputText = string.format("🎧 เพลงบนตัวคุณ:\n🆔 Asset ID: %s\n🔊 ความดัง: %.1f", cleanId, soundObj.Volume or 1)
+        end
+
+    elseif CurrentSelectedPlayer then
+        local targetPlayer = Players:FindFirstChild(CurrentSelectedPlayer.Name)
+        if not targetPlayer then return end
+        local soundObjects = checkPlayerAllSounds(targetPlayer)
+
+        if CurrentViewMode == 1 then
+            JunkTitle.Text = "WIN84 - RAW JUNK VIEWER"
+            jStroke.Color = Color3.fromRGB(140, 20, 230)
+            JunkCopyBtn.BackgroundColor3 = Color3.fromRGB(140, 20, 230)
+            if #soundObjects == 0 then
+                outputText = "❌ ไม่พบออบเจกต์เสียงบนตัวผู้เล่นนี้"
+            else
+                for i, obj in ipairs(soundObjects) do
+                    outputText = outputText .. string.format("[%d] ออบเจกต์: %s\nID: %s\n\n", i, obj:GetFullName(), obj.SoundId)
+                end
+            end
+        elseif CurrentViewMode == 2 then
+            JunkTitle.Text = "WIN84 - INSTANT LOG VIEWER"
+            jStroke.Color = Color3.fromRGB(0, 200, 100)
+            JunkCopyBtn.BackgroundColor3 = Color3.fromRGB(0, 200, 100)
+            local finalIds, seenIds = {}, {}
+            for _, soundObj in ipairs(soundObjects) do
+                local rawId = soundObj.SoundId or ""
+                local decoded = deepDecode(rawId)
+                local searchText = (decoded ~= "" and decoded) or rawId
+                local extractedIds = extractIDsFromPattern(searchText)
+                if #extractedIds == 0 then
+                    for num in string.gmatch(searchText, "%d+") do
+                        if not BlockedIDs[num] then table.insert(extractedIds, num) end
+                    end
+                end
+                for _, id in ipairs(extractedIds) do
+                    if not seenIds[id] then
+                        seenIds[id] = true
+                        table.insert(finalIds, id)
+                    end
+                end
+            end
+            if #finalIds == 0 then
+                outputText = "❌ ดึงค่าแล้วไม่พบ ID เพลงจริงอยู่ข้างในเลย"
+            else
+                outputText = "--- WIN84 เจาะสำเร็จทั้งหมด " .. #finalIds .. " ID ---\n\n"
+                for idx, id in ipairs(finalIds) do
+                    outputText = outputText .. string.format("[%d] ID: %s\n", idx, id)
+                end
+            end
+        end
+    end
+
+    if JunkTextLabel.Text ~= outputText then
+        JunkTextLabel.Text = outputText
+        local textBounds = TextService:GetTextSize(outputText, 11, Enum.Font.Code, Vector2.new(JunkScroll.AbsoluteSize.X - 15, math.huge))
+        JunkTextLabel.Size = UDim2.new(1, -10, 0, textBounds.Y + 20)
+        JunkScroll.CanvasSize = UDim2.new(0, 0, 0, textBounds.Y + 40)
+    end
+end
+
+-- ==================== ระบบรีเฟรชรายชื่อ ====================
+local function refreshPlayers()
+    if not ListScroll or not ListScroll:IsDescendantOf(game) then return end
+    local currentPlayers = Players:GetPlayers()
+    local activeMap = {}
+
+    for _, p in ipairs(currentPlayers) do
+        if p ~= LocalPlayer then
+            activeMap[p] = true
+            local btn = PlayerButtons[p]
+            if not btn then
+                btn = Instance.new("TextButton", ListScroll)
+                btn.Size = UDim2.new(1, -6, 0, 28)
+                btn.Font = Enum.Font.Gotham
+                btn.TextSize = 11
+                btn.TextXAlignment = Enum.TextXAlignment.Left
+                btn.ZIndex = 3
+                Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 4)
+                local bStroke = Instance.new("UIStroke", btn)
+                bStroke.Color = Color3.fromRGB(40, 40, 40)
+
+                btn.MouseButton1Click:Connect(function()
+                    for _, b in pairs(PlayerButtons) do
+                        if b:FindFirstChildOfClass("UIStroke") then b.UIStroke.Color = Color3.fromRGB(40, 40, 40) end
+                    end
+                    bStroke.Color = Color3.fromRGB(255, 215, 0)
+                    CurrentSelectedPlayer = p
+                    StatusLabel.Text = "เลือก: " .. p.DisplayName
+                    updateJunkViewerLive()
+                end)
+                PlayerButtons[p] = btn
+            end
+
+            local activeSounds = checkPlayerAllSounds(p)
+            btn.Text = (#activeSounds > 0 and " 🎵 " or " 👤 ") .. p.DisplayName .. " (@" .. p.Name .. ")"
+            btn.TextColor3 = (#activeSounds > 0) and Color3.fromRGB(0, 255, 0) or Color3.fromRGB(230, 230, 230)
+        end
+    end
+
+    for p, btn in pairs(PlayerButtons) do
+        if not activeMap[p] then
+            btn:Destroy()
+            PlayerButtons[p] = nil
+        end
+    end
+    ListScroll.CanvasSize = UDim2.new(0, 0, 0, Layout.AbsoluteContentSize.Y)
+end
+
+-- ==================== ผูกอีเวนต์ปุ่มกด ====================
+GetIDBtn.MouseButton1Click:Connect(function()
+    if CurrentSelectedPlayer then
+        local soundObjects = checkPlayerAllSounds(CurrentSelectedPlayer)
+        local finalIds, seenIds = {}, {}
+        for _, soundObj in ipairs(soundObjects) do
+            local rawId = soundObj.SoundId or ""
+            local decoded = deepDecode(rawId)
+            local searchText = (decoded ~= "" and decoded) or rawId
+            local extractedIds = extractIDsFromPattern(searchText)
+            if #extractedIds == 0 then
+                for num in string.gmatch(searchText, "%d+") do
+                    if not BlockedIDs[num] then table.insert(extractedIds, num) end
+                end
+            end
+            for _, id in ipairs(extractedIds) do
+                if not seenIds[id] then seenIds[id] = true table.insert(finalIds, id) end
+            end
+        end
+        if #finalIds > 0 then
+            copyToClipboard(table.concat(finalIds, " "))
+            StatusLabel.Text = "📋 WIN84 คัดลอก " .. #finalIds .. " ID แล้ว!"
+        else
+            StatusLabel.Text = "❌ ไม่พบ ID ที่ใช้ได้"
+        end
+    end
+end)
+
+GetJunkBtn.MouseButton1Click:Connect(function()
+    if CurrentSelectedPlayer then
+        local soundObjects = checkPlayerAllSounds(CurrentSelectedPlayer)
+        local firstCleanId = nil
+        for _, soundObj in ipairs(soundObjects) do
+            local cleanId = string.match(soundObj.SoundId, "%d+")
+            if cleanId and not BlockedIDs[cleanId] then firstCleanId = cleanId break end
+        end
+        if firstCleanId then
+            playMusicFromId(firstCleanId)
+            addSavedSong(firstCleanId, "เพลงของ " .. CurrentSelectedPlayer.DisplayName)
+            StatusLabel.Text = "✅ เปิดสำเร็จ + บันทึก: " .. firstCleanId
+        end
+    end
+end)
+
+ViewRawJunkBtn.MouseButton1Click:Connect(function()
+    CurrentViewMode = 1
+    JunkFrame.Visible = true
+    updateJunkViewerLive()
+end)
+
+ViewInstantBtn.MouseButton1Click:Connect(function()
+    CurrentViewMode = 2
+    JunkFrame.Visible = true
+    updateJunkViewerLive()
+end)
+
+MyAudioBtn.MouseButton1Click:Connect(function()
+    CurrentViewMode = 3
+    JunkFrame.Visible = true
+    updateJunkViewerLive()
+end)
+
+SavedSongsBtn.MouseButton1Click:Connect(function()
+    CurrentViewMode = 4
+    JunkFrame.Visible = true
+    updateJunkViewerLive()
+end)
+
+JunkCopyBtn.MouseButton1Click:Connect(function()
+    if CurrentViewMode == 4 then
+        local textList = {}
+        for idx, song in ipairs(SavedSongs) do
+            table.insert(textList, string.format("[%d] %s - ID: %s", idx, song.name, song.id))
+        end
+        copyToClipboard(table.concat(textList, "\n"))
+        StatusLabel.Text = "📋 คัดลอกรายการ ID ที่เซฟแล้ว!"
+    else
+        copyToClipboard(JunkTextLabel.Text)
+        StatusLabel.Text = "📋 คัดลอกเนื้อหาเรียบร้อย!"
+    end
+end)
+
+JunkBackBtn.MouseButton1Click:Connect(function()
+    JunkFrame.Visible = false
+end)
+
+RefreshBtn.MouseButton1Click:Connect(refreshPlayers)
+
+ToggleBtn.MouseButton1Click:Connect(function()
+    MainFrame.Visible = not MainFrame.Visible
+    if not MainFrame.Visible then 
+        JunkFrame.Visible = false 
+        RenameModal.Visible = false
+    else 
+        refreshPlayers() 
+    end
+end)
+
+-- เรียกใช้งานฟังก์ชันดึง ID บล็อคอัตโนมัติ
+task.spawn(function()
+    fetchBlockedIDs()
+end)
+
+task.spawn(function()
+    while true do
+        task.wait(1.5)
+        if MainFrame.Visible then
+            pcall(function()
+                refreshPlayers()
+                if JunkFrame.Visible then updateJunkViewerLive() end
+            end)
+        end
+    end
+end)
+
+refreshPlayers()
